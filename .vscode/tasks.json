@@ -3,9 +3,27 @@
     // for the documentation about the tasks.json format
     "osx": {
         "version": "0.1.0",
-        "command": "g++",
+        "command": "sh",
         "isShellCommand": true,
-        "args": ["-std=c++14", "main.cpp"],
-        "showOutput": "always"
+        "args": ["-c"],
+        "showOutput": "always",
+        "tasks": [
+            {
+                "taskName": "build",
+                "args": [
+                    "g++ -std=c++11 main.cpp"
+                ],
+                "isBuildCommand": true,
+                "suppressTaskName": true
+            },
+            {
+                "taskName": "run",
+                "args": [
+                    "./a.out"
+                ],
+                "isTestCommand": true,
+                "suppressTaskName": true
+            }
+        ]
     }
 }
