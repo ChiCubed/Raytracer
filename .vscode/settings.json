@@ -1,6 +1,27 @@
 {
     "files.associations": {
         "iostream": "cpp",
-        "*.ipp": "cpp"
+        "*.ipp": "cpp",
+        "cmath": "cpp",
+        "complex": "cpp",
+        "cstdlib": "cpp",
+        "random": "cpp",
+        "limits": "cpp",
+        "valarray": "cpp",
+        "chrono": "cpp",
+        "dense": "cpp",
+        "core": "cpp",
+        "slist": "cpp",
+        "array": "cpp",
+        "initializer_list": "cpp",
+        "exception": "cpp",
+        "new": "cpp",
+        "cstdint": "cpp",
+        "*.tcc": "cpp",
+        "tuple": "cpp",
+        "type_traits": "cpp",
+        "typeinfo": "cpp",
+        "system_error": "cpp",
+        "vector": "cpp"
     }
 }
