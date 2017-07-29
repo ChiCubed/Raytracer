@@ -8,7 +8,7 @@ float getDist(const vec3& camera, const vec3& direction, float near, float far) 
     float depth = near;
     for (int i = 0; i < MAX_MARCH_STEPS; i++) {
         float dist = scene(camera + depth * direction) * stepScale;
-        if (abs(dist) < EPSILON) return depth;
+        if (fabs(dist) < EPSILON) return depth;
         depth += dist;
         if (depth >= far) break;
     }
