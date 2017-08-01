@@ -19,30 +19,54 @@
     #include <GL/gl3.h>
 #endif
 
-#include "df.cpp"
-#include "render.cpp"
-
 #include <cmath>
 
 const int WIDTH = 640;
 const int HEIGHT = 480;
-const int FPS = 60;
+const int FPS = 120;
 
-const float FOV = 45.0f;
+const int MAX_NUM_LIGHTS = 128;
+const int MAX_NUM_DIRECTIONAL_LIGHTS = 128;
 
-const float NEAR_DIST = 0.0f;
-const float FAR_DIST  = 100.0f;
+const float PI = 3.1415926535897932384626433832795;
 
-// these colours are between 0 and 1 rather
-// than 0 and 255.
-const vec3  AMBIENT_COLOUR  = {0.1,0.1,0.1},
-            DIFFUSE_COLOUR  = {0.7,0.7,0.7},
-            SPECULAR_COLOUR = {1.0,1.0,1.0};
-const float SHININESS       = 8;
-
-float scene(const vec3& p) {
-    return sdSphere(p);
+float radians(float angle) {
+    return angle * PI / 180.0f;
 }
+
+Eigen::Matrix4f yawPitchRollMatrix(const Eigen::Vector3f& angle) {
+    Eigen::Affine3f     yaw = (Eigen::Affine3f)Eigen::AngleAxisf(radians(angle(0)), Eigen::Vector3f::UnitY()),
+                      pitch = (Eigen::Affine3f)Eigen::AngleAxisf(radians(angle(1)), Eigen::Vector3f::UnitX()),
+                       roll = (Eigen::Affine3f)Eigen::AngleAxisf(radians(angle(2)), Eigen::Vector3f::UnitZ());
+   
+    return (yaw*pitch*roll).matrix();
+}
+
+// The padding exists
+// for communication with GLSL.
+struct Light {
+    Eigen::Vector3f pos;
+    GLfloat padding;
+    Eigen::Vector3f color;
+    GLfloat intensity;
+};
+
+struct DirectionalLight {
+    Eigen::Vector3f direction;
+    GLfloat padding;
+    Eigen::Vector3f color;
+    GLfloat intensity;
+};
+
+Light createLight(const Eigen::Vector3f& pos, const Eigen::Vector3f& color, float intensity) {
+    return {pos, 0, color, intensity};
+}
+
+DirectionalLight createDirectionalLight(const Eigen::Vector3f& direction,
+                                        const Eigen::Vector3f& color, float intensity) {
+    return {direction, 0, color, intensity};
+}
+
 
 int main(int argc, char* argv[]) {
     // SDL setup stuff
@@ -72,12 +96,16 @@ int main(int argc, char* argv[]) {
 
     // Program variables
     bool quit = false;
-    int t = 0;
 
-    Eigen::Vector3f cam = {0,2,5};
+    Eigen::Vector3f cam = {0,0,5};
 
-    std::vector<Light> lights = {{{5.0f,5.0f,0.0f},{0,1,1},0.6f},
-                                 {{-5.0f,5.0f,0.0f},{1,0,1},0.6f}};
+    std::vector<Light> lights = {
+                                 createLight({ 5.0f,5.0f,0.0f},{0,1,1},0.6f),
+                                 createLight({-5.0f,5.0f,0.0f},{1,0,1},0.6f)
+                                 };
+    std::vector<DirectionalLight> directionalLights = {
+                                 createDirectionalLight({0.0f,-1.0f,0.0f},{1,1,1},0.6f)
+                                 };
     float ambientIntensity = 0.5f;
 
     Eigen::Vector3f angle = {0, 0, 0};
@@ -144,6 +172,11 @@ int main(int argc, char* argv[]) {
     glShaderSource(fragmentShader, 1, &fragSource, NULL);
     glCompileShader(fragmentShader);
 
+    // error check the fragment shader
+    GLint val = GL_FALSE;
+    glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &val);
+    if (val != GL_TRUE) return 1;
+
     // combine to a shader program
     GLuint shaderProgram = glCreateProgram();
     glAttachShader(shaderProgram, vertexShader);
@@ -157,6 +190,20 @@ int main(int argc, char* argv[]) {
     glLinkProgram(shaderProgram);
     glUseProgram(shaderProgram);
 
+    // Add uniform for camera, to allow
+    // CPU and GPU communication.
+    GLint camUniform = glGetUniformLocation(shaderProgram, "cameraPos");
+    // Also a uniform for the projection matrix.
+    GLint viewToWorldUniform = glGetUniformLocation(shaderProgram, "viewToWorld");
+    // And for the time
+    GLint timeUniform = glGetUniformLocation(shaderProgram, "time");
+    // And for the screen size
+    GLint screenSizeUniform = glGetUniformLocation(shaderProgram, "screenSize");
+    // And for the number of lights
+    GLint numLightsUniform = glGetUniformLocation(shaderProgram, "numLights");
+    // And for the number of directional lights
+    GLint numDirectionalLightsUniform = glGetUniformLocation(shaderProgram, "numDirectionalLights");
+
     // Specify vertex data layout
     GLint posAttrib = glGetAttribLocation(shaderProgram, "position");
     glEnableVertexAttribArray(posAttrib);
@@ -164,13 +211,42 @@ int main(int argc, char* argv[]) {
 
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
 
-    while (1) {
-        const Uint64 start = SDL_GetPerformanceCounter();
+    // lights UBO
+    GLuint lightsUbo, lightBlockIndex;
+    GLuint lightBindingPoint = 0;
 
-        t = SDL_GetTicks() - t;
-        if (t < 1000 / FPS) {
-            SDL_Delay(1000/FPS - t);
-        }
+    lightBlockIndex = glGetUniformBlockIndex(shaderProgram, "LightBlock");
+    glUniformBlockBinding(shaderProgram, lightBlockIndex, lightBindingPoint);
+
+    glGenBuffers(1, &lightsUbo);
+    glBindBuffer(GL_UNIFORM_BUFFER, lightsUbo);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(Light)*MAX_NUM_LIGHTS, NULL, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+
+    glBindBufferRange(GL_UNIFORM_BUFFER, lightBindingPoint, lightsUbo,
+                      0, sizeof(Light)*MAX_NUM_LIGHTS);
+
+    // directional lights UBO
+    GLuint directionalLightsUbo, directionalLightBlockIndex;
+    GLuint directionalLightBindingPoint = 1;
+
+    directionalLightBlockIndex = glGetUniformBlockIndex(shaderProgram, "DirectionalLightBlock");
+    glUniformBlockBinding(shaderProgram, directionalLightBlockIndex, directionalLightBindingPoint);
+
+    glGenBuffers(1, &directionalLightsUbo);
+    glBindBuffer(GL_UNIFORM_BUFFER, directionalLightsUbo);
+    glBufferData(GL_UNIFORM_BUFFER, sizeof(DirectionalLight)*MAX_NUM_DIRECTIONAL_LIGHTS, NULL, GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+
+    glBindBufferRange(GL_UNIFORM_BUFFER, directionalLightBindingPoint, directionalLightsUbo,
+                      0, sizeof(DirectionalLight)*MAX_NUM_DIRECTIONAL_LIGHTS);
+
+    int ct = SDL_GetTicks(), lt;
+    int it = ct; // initial time
+    while (1) {
+        lt = ct;
+        ct = SDL_GetTicks();
+        if (ct-lt < 1000 / FPS) SDL_Delay(1000 / FPS - ct+lt);
 
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -187,7 +263,7 @@ int main(int argc, char* argv[]) {
                     break;
                 case SDL_MOUSEMOTION:
                     angle += (Eigen::Vector3f){
-                               event.motion.xrel*0.5f,
+                              -event.motion.xrel*0.5f,
                               -event.motion.yrel*0.5f,
                                0};
                     break;
@@ -206,43 +282,40 @@ int main(int argc, char* argv[]) {
 
         if (keyboardState[SDL_SCANCODE_UP] || keyboardState[SDL_SCANCODE_W]) {
             Eigen::Vector4f direction = viewToWorld*(Eigen::Vector4f){0,0,-1,0};
-            cam += XYZ(direction);
+            cam += direction.block<3,1>(0,0)*0.2;
         }
         if (keyboardState[SDL_SCANCODE_DOWN] || keyboardState[SDL_SCANCODE_S]) {
-            Eigen::Vector4f direction = viewToWorld*(Eigen::Vector4f){0,0,1,0};
-            cam += XYZ(direction);
+            Eigen::Vector4f direction = viewToWorld*(Eigen::Vector4f){0,0, 1,0};
+            cam += direction.block<3,1>(0,0)*0.2;
         }
         if (keyboardState[SDL_SCANCODE_LEFT] || keyboardState[SDL_SCANCODE_A]) {
-            Eigen::Vector4f direction = viewToWorld*(Eigen::Vector4f){1,0,0,0};
-            cam += XYZ(direction);
+            Eigen::Vector4f direction = viewToWorld*(Eigen::Vector4f){-1,0,0,0};
+            cam += direction.block<3,1>(0,0)*0.2;
         }
         if (keyboardState[SDL_SCANCODE_RIGHT] || keyboardState[SDL_SCANCODE_D]) {
-            Eigen::Vector4f direction = viewToWorld*(Eigen::Vector4f){-1,0,0,0};
-            cam += XYZ(direction);
+            Eigen::Vector4f direction = viewToWorld*(Eigen::Vector4f){ 1,0,0,0};
+            cam += direction.block<3,1>(0,0)*0.2;
         }
 
-        for (int i = 0; i < WIDTH; ++i) {
-            Eigen::Vector3f viewDir, worldDir;
-            Eigen::Vector4f tViewDir, eWorldDir;
-            for (int j = 0; j < HEIGHT; ++j) {
-                viewDir = direction(FOV, {WIDTH, HEIGHT}, {WIDTH-i, HEIGHT-j});
+        glUniform3fv(camUniform, 1, cam.data());
+        // GL_TRUE in the expression below means we convert
+        // the Eigen row-major matrix to an
+        // OpenGL column-major matrix.
+        glUniformMatrix4fv(viewToWorldUniform, 1, GL_FALSE, viewToWorld.data());
+        glUniform1f(timeUniform, (it - ct) / 1000.0f);
+        glUniform2f(screenSizeUniform, WIDTH, HEIGHT);
+        glUniform1i(numLightsUniform, lights.size());
+        // lightsUbo
+        glBindBuffer(GL_UNIFORM_BUFFER, lightsUbo);
+        glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(Light)*lights.size(), lights.data());
+        glBindBuffer(GL_UNIFORM_BUFFER, 0);
+        // directionalLightsUbo
 
-                tViewDir = {viewDir(0),viewDir(1),viewDir(2),1};
-                eWorldDir = viewToWorld * tViewDir;
-                worldDir = XYZ(eWorldDir);
-                
-                float dist = getDist(cam, worldDir, NEAR_DIST, FAR_DIST);
-                
-                if (dist > FAR_DIST - EPSILON) {
-                    // nothing was hit
-                } else {
-                    vec3 c = lighting(AMBIENT_COLOUR, DIFFUSE_COLOUR, SPECULAR_COLOUR,
-                                      SHININESS, cam + worldDir*dist, cam,
-                                      ambientIntensity, lights);
-                    c *= 255;
-                }
-            }
-        }
+        glUniform1i(numDirectionalLightsUniform, directionalLights.size());
+        glBindBuffer(GL_UNIFORM_BUFFER, directionalLightsUbo);
+        glBufferSubData(GL_UNIFORM_BUFFER, 0,
+                        sizeof(DirectionalLight)*directionalLights.size(), directionalLights.data());
+        glBindBuffer(GL_UNIFORM_BUFFER, 0);
 
         // Clear screen
         glClear(GL_COLOR_BUFFER_BIT);
@@ -253,16 +326,15 @@ int main(int argc, char* argv[]) {
         // Present window
         SDL_GL_SwapWindow(window);
 
-        const Uint64 end = SDL_GetPerformanceCounter();
-        const static Uint64 freq = SDL_GetPerformanceFrequency();
-        const double seconds = (end-start)/static_cast<double>(freq);
-        std::cout << "Frame time: " << seconds * 1000.0 << "ms" << std::endl;
+        std::cout << "Frame time: " << ct-lt << "ms" << std::endl;
     }
 
     glDeleteProgram(shaderProgram);
     glDeleteShader(fragmentShader);
     glDeleteShader(vertexShader);
 
+    glDeleteBuffers(1, &lightsUbo);
+    glDeleteBuffers(1, &directionalLightsUbo);
     glDeleteBuffers(1, &ebo);
     glDeleteBuffers(1, &vbo);
     glDeleteVertexArrays(1, &vao);

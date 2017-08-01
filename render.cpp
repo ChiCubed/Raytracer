@@ -130,8 +130,8 @@ vec3 lighting(const vec3& k_a, const vec3& k_d, const vec3& k_s, float alpha,
 
         // We cheat a bit more to make sure our soft shadows look good.
         if (tmp != vec3::Zero()) {
-            tmp *= shadow(p, (lights[i].pos-p).normalized(), EPSILON*32,
-                          (lights[i].pos-p).norm() - EPSILON*32, 8);
+            tmp *= shadow(p, (lights[i].pos-p).normalized(), EPSILON*4,
+                          (lights[i].pos-p).norm(), 8);
         }
         
         colour += tmp;

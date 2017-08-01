@@ -159,7 +159,7 @@ vec3 opTranslate(const vec3& p, const vec3& trans) {
 }
 
 vec3 opTransform(const vec3& p, const Eigen::Matrix4f& m) {
-    vec4 dummy = {p(0),p(1),p(2),0.0f};
+    // vec4 dummy = {p(0),p(1),p(2),0.0f};
     // alternatively:
     // //         m.householderQr().solve(dummy);
     // vec4 tmp = m.inverse() * dummy;
